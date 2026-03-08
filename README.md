@@ -1,6 +1,6 @@
-# ESP32 WROOM Machine Control System
+# Bio-Bubbler
 
-A pump control system using an ESP32 WROOM microcontroller with RGB LED status indication and relay-controlled pumps.
+Bio-Bubbler is a pump control system using an ESP32 WROOM microcontroller with RGB LED status indication and relay-controlled pumps.
 
 ## Overview
 

@@ -1,4 +1,4 @@
-# Breadboard Setup Prompt for LLM
+# Bio-Bubbler Breadboard Setup Prompt for LLM
 
 Use this prompt with ChatGPT, Claude, or another LLM to get detailed breadboard wiring instructions.
 
@@ -6,7 +6,7 @@ Use this prompt with ChatGPT, Claude, or another LLM to get detailed breadboard 
 
 ## Prompt
 
-I'm building a machine control system with an ESP32 WROOM microcontroller. I need help setting up the hardware on a breadboard.
+I'm building Bio-Bubbler, a machine control system with an ESP32 WROOM microcontroller. I need help setting up the hardware on a breadboard.
 
 ### System Overview:
 - **Microcontroller:** ESP32 WROOM

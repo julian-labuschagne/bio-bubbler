@@ -1,4 +1,4 @@
-# Circuit Diagrams (Visual Rendering Ready)
+# Bio-Bubbler Circuit Diagrams (Visual Rendering Ready)
 
 This file contains circuit diagrams that can be rendered visually.
 

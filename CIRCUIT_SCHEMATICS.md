@@ -1,4 +1,4 @@
-# Detailed Circuit Schematics
+# Bio-Bubbler Detailed Circuit Schematics
 
 Complete ASCII circuit diagrams for breadboard assembly.
 
