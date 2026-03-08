@@ -2,6 +2,9 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/gpio.h"
+#include "esp_log.h"
+
+static const char *TAG = "BIO_BUBBLER";
 
 // Status LED pins (RGB)
 #define LED_RED GPIO_NUM_2
@@ -13,8 +16,8 @@
 #define PUMP2_PIN GPIO_NUM_13
 
 // Button pins
-#define BUTTON_MODE_PIN GPIO_NUM_34
-#define BUTTON_CONFIRM_PIN GPIO_NUM_35
+#define BUTTON_MODE_PIN GPIO_NUM_32
+#define BUTTON_CONFIRM_PIN GPIO_NUM_33
 
 // Timing constants (in milliseconds)
 #define BUTTON_DEBOUNCE_MS 20
@@ -111,12 +114,14 @@ void init_gpio(void)
     gpio_reset_pin(PUMP2_PIN);
     gpio_set_direction(PUMP2_PIN, GPIO_MODE_OUTPUT);
 
-    // Initialize button pins as inputs
+    // Initialize button pins as inputs with internal pullups
     gpio_reset_pin(BUTTON_MODE_PIN);
     gpio_set_direction(BUTTON_MODE_PIN, GPIO_MODE_INPUT);
+    gpio_set_pull_mode(BUTTON_MODE_PIN, GPIO_PULLUP_ONLY);
 
     gpio_reset_pin(BUTTON_CONFIRM_PIN);
     gpio_set_direction(BUTTON_CONFIRM_PIN, GPIO_MODE_INPUT);
+    gpio_set_pull_mode(BUTTON_CONFIRM_PIN, GPIO_PULLUP_ONLY);
 }
 
 // Debounce button and return 1 if pressed
@@ -140,15 +145,18 @@ void handle_mode_button(void)
         pending_state = PENDING_PULSE;
         flash_led = 1;
         flash_timer = 0;
+        ESP_LOGI(TAG, "Mode: PENDING_PULSE (flashing red)");
     } else if (pending_state == PENDING_PULSE) {
         // If PULSE pending, switch to CONTINUOUS pending
         pending_state = PENDING_CONTINUOUS;
         flash_timer = 0;
+        ESP_LOGI(TAG, "Mode: PENDING_CONTINUOUS (flashing blue)");
     } else if (pending_state == PENDING_CONTINUOUS) {
         // If CONTINUOUS pending, go back to IDLE (confirmed)
         pending_state = PENDING_NONE;
         flash_led = 0;
         set_machine_state(STATE_IDLE);
+        ESP_LOGI(TAG, "Mode: Back to IDLE");
     }
 }
 
@@ -157,12 +165,15 @@ void handle_confirm_button(void)
     // Handle based on pending state or current state
     if (pending_state == PENDING_PULSE) {
         // Confirm PULSE state
+        ESP_LOGI(TAG, "Confirmed: STATE_PULSE");
         set_machine_state(STATE_PULSE);
     } else if (pending_state == PENDING_CONTINUOUS) {
         // Confirm CONTINUOUS state
+        ESP_LOGI(TAG, "Confirmed: STATE_CONTINUOUS");
         set_machine_state(STATE_CONTINUOUS);
     } else if (current_state == STATE_PULSE) {
         // In PULSE state, trigger 30-second pump cycle
+        ESP_LOGI(TAG, "PULSE: Starting 30s pump cycle");
         gpio_set_level(PUMP1_PIN, 1);
         gpio_set_level(PUMP2_PIN, 1);
         pulse_timer = PULSE_DURATION_MS;
@@ -170,9 +181,11 @@ void handle_confirm_button(void)
         // In CONTINUOUS state, emergency stop/start toggle
         continuous_pumps_enabled = !continuous_pumps_enabled;
         if (continuous_pumps_enabled) {
+            ESP_LOGI(TAG, "CONTINUOUS: Pumps ON");
             gpio_set_level(PUMP1_PIN, 1);
             gpio_set_level(PUMP2_PIN, 1);
         } else {
+            ESP_LOGI(TAG, "CONTINUOUS: Pumps OFF (emergency stop)");
             gpio_set_level(PUMP1_PIN, 0);
             gpio_set_level(PUMP2_PIN, 0);
         }
@@ -227,12 +240,15 @@ void app_main(void)
 
     // Start in idle state (green LED on, pumps off)
     set_machine_state(STATE_IDLE);
+    ESP_LOGI(TAG, "Initialized - STATE_IDLE");
 
     // Main control loop
     while (1) {
         // Check mode button
         if (is_button_pressed(BUTTON_MODE_PIN)) {
+            ESP_LOGI(TAG, "Mode button pressed");
             handle_mode_button();
+            ESP_LOGI(TAG, "Pending state: %d", pending_state);
             // Wait for button release
             while (gpio_get_level(BUTTON_MODE_PIN) == 0) {
                 vTaskDelay(10 / portTICK_PERIOD_MS);
@@ -242,7 +258,9 @@ void app_main(void)
 
         // Check confirm button
         if (is_button_pressed(BUTTON_CONFIRM_PIN)) {
+            ESP_LOGI(TAG, "Confirm button pressed");
             handle_confirm_button();
+            ESP_LOGI(TAG, "Current state: %d", current_state);
             // Wait for button release
             while (gpio_get_level(BUTTON_CONFIRM_PIN) == 0) {
                 vTaskDelay(10 / portTICK_PERIOD_MS);
