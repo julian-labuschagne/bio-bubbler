@@ -1,4 +1,4 @@
-# Circuit Connection Reference
+# Bio-Bubbler Circuit Connection Reference
 
 Quick visual reference for breadboard layout before detailed schematics.
 
