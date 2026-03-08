@@ -162,10 +162,20 @@ static int is_button_pressed(gpio_num_t pin)
 
 void handle_mode_button(void)
 {
-    // If in an active state (not IDLE), go back to IDLE
-    if (current_state != STATE_IDLE) {
-        ESP_LOGI(TAG, "Mode: Returning to IDLE from %d", current_state);
+    // From CONTINUOUS, mode acts as quick exit to IDLE.
+    if (current_state == STATE_CONTINUOUS) {
+        ESP_LOGI(TAG, "Mode: CONTINUOUS -> IDLE");
         set_machine_state(STATE_IDLE);
+        return;
+    }
+
+    // From PULSE, mode prepares a direct switch path to CONTINUOUS.
+    if (current_state == STATE_PULSE) {
+        set_machine_state(STATE_IDLE);
+        pending_state = PENDING_CONTINUOUS;
+        flash_led = 1;
+        flash_timer = 0;
+        ESP_LOGI(TAG, "Mode: PULSE -> PENDING_CONTINUOUS (flashing blue)");
         return;
     }
     
