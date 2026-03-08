@@ -53,7 +53,8 @@ Behavior:
 - **From IDLE:** Press → Flashing RED (PULSE pending)
 - **From Flashing RED:** Press → Flashing BLUE (CONTINUOUS pending)
 - **From Flashing BLUE:** Press → IDLE (confirmed, no flash)
-- **From PULSE or CONTINUOUS (active states):** Press → Immediate IDLE
+- **From PULSE (active state):** Press → Flashing BLUE (CONTINUOUS pending)
+- **From CONTINUOUS (active state):** Press → Immediate IDLE
 
 ### Confirm Button (GPIO 33)
 Confirms pending state or executes action:
