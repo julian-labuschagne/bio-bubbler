@@ -1,179 +1,151 @@
 # Bio-Bubbler
 
-Bio-Bubbler is a pump control system using an ESP32 WROOM microcontroller with RGB LED status indication and relay-controlled pumps.
+Bio-Bubbler is an ESP32-based pump controller with:
+- RGB status LED
+- two relay-driven pumps
+- two buttons (Mode and Confirm/Select)
+- a 0.96 inch SPI OLED status screen
+- built-in Wi-Fi AP + web UI for per-pump pulse calibration
 
-## Overview
+## Features
 
-This project controls a machine with two pumps via relays. An RGB LED provides visual feedback about the machine's current state. The system has three operating modes:
-
-- **IDLE (Green)** — Pumps off, safe to work and fiddle with the machine
-- **CONTINUOUS (Blue)** — Both pumps running continuously (toggled via button)
-- **PULSE (Red)** — Pumps run for configurable per-pump durations
+- Three modes: `IDLE`, `PULSE`, `CONTINUOUS`
+- Pending mode selection with flashing LED/text hints
+- Independent pulse durations for Pump 1 and Pump 2
+- NVS persistence for pump calibration values
+- Continuous-mode brewing timer on OLED (`dd hh mm`)
+- Idle OLED info page toggle (SSID/password/IP)
 
 ## Hardware Pinout
 
-### Status LED (RGB)
-- **Red LED** — GPIO 2
-- **Green LED** — GPIO 4
-- **Blue LED** — GPIO 5
+| Function | GPIO |
+|---|---|
+| LED Red | 2 |
+| LED Green | 4 |
+| LED Blue | 5 |
+| Pump 1 relay | 12 |
+| Pump 2 relay | 13 |
+| OLED SCLK (`D0`) | 18 |
+| OLED MOSI (`D1`) | 23 |
+| OLED RST (`RES`) | 16 |
+| OLED DC | 17 |
+| OLED CS | 27 |
+| Mode button | 32 |
+| Confirm/Select button | 33 |
 
-### Pump Control (via Relays)
-- **Pump 1** — GPIO 12
-- **Pump 2** — GPIO 13
+Buttons are active-low (button to GND, internal pull-up enabled).
 
-### Buttons
-- **Mode Button** — GPIO 32
-- **Confirm Button** — GPIO 33
+## State Behavior
 
-## States
+### Confirmed states
 
-The machine operates in one of three confirmed states, with a pending state system for safe state transitions.
+| State | LED | Pumps | OLED |
+|---|---|---|---|
+| `IDLE` | Solid Green | Off | `Idle` |
+| `PULSE` | Solid Red | Off until triggered | `Tap` (or `Pouring` while active pulse runs) |
+| `CONTINUOUS` | Solid Blue | On (or paused by emergency stop) | `Brewing` + timer |
 
-### Confirmed States
+### Pending states (from IDLE via Mode)
 
-| State | LED Color | Pump 1 | Pump 2 | Description |
-|-------|-----------|--------|--------|-------------|
-| `STATE_IDLE` | Solid Green | OFF | OFF | Safe idle state, no pump operation |
-| `STATE_CONTINUOUS` | Solid Blue | ON* | ON* | Both pumps running continuously |
-| `STATE_PULSE` | Solid Red | OFF (until trigger) | OFF (until trigger) | Pumps ready for manual configured cycles |
-
-*Emergency stop/start available in CONTINUOUS mode
-
-### Pending States (LED Flashing)
-
-| Pending State | LED Color | Action | Next |
-|---------------|-----------|--------|------|
-| `PENDING_PULSE` | Flashing Red | Press Mode to cycle | PENDING_CONTINUOUS |
-| `PENDING_CONTINUOUS` | Flashing Blue | Press Mode to return to IDLE | IDLE (confirmed) |
+| Pending | LED | OLED text |
+|---|---|---|
+| `PENDING_PULSE` | Flashing Red | Flashing `Tap` |
+| `PENDING_CONTINUOUS` | Flashing Blue | Flashing `Brew` |
 
 ## Button Behavior
 
-### Mode Button (GPIO 32)
-Behavior:
-- **From IDLE:** Press → Flashing RED (PULSE pending)
-- **From Flashing RED:** Press → Flashing BLUE (CONTINUOUS pending)
-- **From Flashing BLUE:** Press → IDLE (confirmed, no flash)
-- **From PULSE (active state):** Press → Flashing BLUE (CONTINUOUS pending)
-- **From CONTINUOUS (active state):** Press → Immediate IDLE
+### Mode button (GPIO 32)
 
-### Confirm Button (GPIO 33)
-Confirms pending state or executes action:
-- **Flashing RED:** Press → Solid RED (PULSE confirmed, pumps ready)
-- **Flashing BLUE:** Press → Solid BLUE (CONTINUOUS confirmed, pumps active)
-- **Solid RED (PULSE):** Press → Triggers pulse cycle with per-pump configured durations
-- **Solid BLUE (CONTINUOUS):** Press → Emergency stop/start toggle (pumps on/off)
-- **Solid GREEN (IDLE):** Does nothing
+- From `IDLE`: cycles pending selection
+  - none -> `PENDING_PULSE`
+  - `PENDING_PULSE` -> `PENDING_CONTINUOUS`
+  - `PENDING_CONTINUOUS` -> back to `IDLE`
+- From `PULSE`: switches to `PENDING_CONTINUOUS`
+- From `CONTINUOUS`: immediate `IDLE`
 
-## Operation Sequence Example
+### Confirm/Select button (GPIO 33)
 
-1. **Power on** → IDLE (solid green, safe)
-2. **Press Mode** → Pending PULSE (flashing red)
-3. **Press Confirm** → PULSE confirmed (solid red, pumps ready)
-4. **Press Confirm** → Pump cycle starts (both pumps on)
-5. **Wait until each timer expires** → Each pump turns off independently
-6. **Press Mode** → Pending CONTINUOUS (flashing blue)
-7. **Press Mode** → Back to IDLE (confirmed, solid green)
-8. **OR Press Confirm** → CONTINUOUS confirmed (solid blue, pumps active)
-9. **Press Confirm** → Emergency stop (pumps off, LED stays blue)
-10. **Press Confirm** → Emergency start (pumps on again)
+- If `PENDING_PULSE`: enters `PULSE`
+- If `PENDING_CONTINUOUS`: enters `CONTINUOUS`
+- In `PULSE`: starts one pulse run (each pump uses its own duration)
+- In `CONTINUOUS`: emergency stop/start toggle
+- In `IDLE` with no pending mode: toggles OLED Wi-Fi info page
 
-## Current Implementation
+## OLED Behavior
 
-- GPIO initialization and configuration
-- State management via enum and state function
-- RGB LED feedback for all confirmed states
-- LED flashing for pending states (500ms flash interval)
-- Pump relay control
-- Button handling with debouncing (20ms)
-- Independent pulse timers for Pump 1 and Pump 2
-- Web-based pulse configuration (SoftAP + HTTP UI)
-- Presets for 1.5L, 2L, and 5L plus custom millisecond values
-- Pulse duration persistence using NVS (survives reboot)
-- Emergency stop/start toggle for CONTINUOUS mode
-- Button press detection with 10ms check interval
+### Main state view
 
-## Pulse Timing Setup
+- `Idle` in idle mode
+- `Tap` in pulse mode
+- `Pouring` while pulse pumps are active
+- `Brewing` in continuous mode with timer line
 
-Use this procedure to calibrate each pump so both output the same target volume.
+### Brewing timer
 
-### 1. Connect To The Device
+- Format:
+  - days shown when non-zero: `DDdHHhMMm`
+  - otherwise: `HHhMMm`
+- Counts only while continuous pumps are running
+- Pauses when continuous emergency stop is active
+- Resumes when pumps restart
+- Resets when leaving continuous mode
 
-1. Power on the ESP32 running Bio-Bubbler firmware.
-2. Connect your phone/laptop to Wi-Fi:
-	- SSID: `BioBubbler`
-	- Password: `bubbler123`
-3. Open `http://192.168.4.1` in your browser.
+### Idle info page (toggle with Confirm in IDLE)
 
-### 2. Choose A Starting Preset
+Shows:
+- SSID: `BioBubbler`
+- Password: `bubbler123`
+- IP: `192.168.4.1`
 
-Each pump can be set independently.
+Press Confirm again to return to `Idle` display.
 
-| Preset | Duration |
-|--------|----------|
-| 1.5L | 9000 ms |
-| 2L | 12000 ms |
-| 5L | 30000 ms |
+## Wi-Fi Calibration UI
 
-Press a preset button under Pump 1 and Pump 2 to apply it.
+- AP SSID: `BioBubbler`
+- AP password: `bubbler123`
+- Web URL: `http://192.168.4.1`
 
-### 3. Fine Tune With Custom Values
+Presets:
+- 1.5L -> 9000 ms
+- 2L -> 12000 ms
+- 5L -> 30000 ms
 
-1. Enter custom values in milliseconds for each pump.
-2. Click **Save Custom**.
-3. Values are saved to NVS automatically and persist after reboot.
+Custom values are allowed in the range `1..300000` ms and are saved to NVS.
 
-Allowed range is `1` to `300000` ms.
+## Pulse Timing Calibration
 
-### 4. Test In Pulse Mode
-
-1. Press **Mode** until PULSE is pending (flashing red).
-2. Press **Confirm** to enter PULSE (solid red).
-3. Press **Confirm** again to run one pulse cycle.
-4. Pump 1 and Pump 2 will stop independently when their timers expire.
-
-### 5. Calibration Formula
-
-If a pump under-delivers or over-delivers, update its duration with:
+1. Connect to `BioBubbler` Wi-Fi AP.
+2. Open `http://192.168.4.1`.
+3. Start with a preset for each pump.
+4. Run pulse cycles and measure output.
+5. Adjust per pump with:
 
 `new_duration_ms = current_duration_ms * target_volume / measured_volume`
 
-Example: target is 5.0L, measured is 4.6L at 30000 ms.
+Example:
+- current = `30000`
+- target = `5.0L`
+- measured = `4.6L`
 
-`new_duration_ms = 30000 * 5.0 / 4.6 = 32608 ms`
+`new_duration_ms = 30000 * 5.0 / 4.6 = 32608`
 
-Apply the new value in the web UI and test again.
+## HTTP Endpoints
 
-### Optional API Endpoints
+- `GET /status` -> current pump durations JSON
+- `GET /set?pump=1&dur=12000` -> set Pump 1
+- `GET /set?pump=2&dur=9000` -> set Pump 2
 
-- `GET /status` returns current durations, for example: `{"pump1":30000,"pump2":30000}`
-- `GET /set?pump=1&dur=12000` sets Pump 1 duration
-- `GET /set?pump=2&dur=9000` sets Pump 2 duration
-
-## TODO
-
-- Consider adding status output to serial console for debugging
-- Consider adding additional safety features (e.g., watchdog timer)
-- Test button reliability and debounce timing in real hardware
-
-## Building and Flashing
+## Build and Flash
 
 ```bash
-# Build the project
 idf.py build
-
-# Flash to device
 idf.py flash
-
-# Monitor serial output
 idf.py monitor
 ```
 
 ## Notes
 
-- Buttons are assumed to be active-low (pressing connects to GND)
-- LED flash interval is 500ms (on for 250ms, off for 250ms)
-- Button debounce delay is 20ms to filter electrical noise
-- Pulse durations are configurable per pump and stored in NVS
-- Emergency stop/start is only available in CONTINUOUS mode (press Confirm to toggle)
-- System starts in IDLE state for safe operation
-- Relay control assumes active-high logic (1 = ON, 0 = OFF)
+- Relay control is active-high (`1 = ON`, `0 = OFF`)
+- LED flash interval is 500 ms
+- Button debounce is 20 ms
+- Main control loop interval is 10 ms
