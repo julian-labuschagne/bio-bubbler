@@ -1,8 +1,11 @@
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
+#include <ctype.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/gpio.h"
+#include "driver/spi_master.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "nvs.h"
@@ -11,6 +14,7 @@
 #include "esp_netif.h"
 #include "esp_http_server.h"
 #include "esp_mac.h"
+#include "esp_timer.h"
 
 static const char *TAG = "BIO_BUBBLER";
 
@@ -27,6 +31,19 @@ static const char *TAG = "BIO_BUBBLER";
 #define BUTTON_MODE_PIN GPIO_NUM_32
 #define BUTTON_CONFIRM_PIN GPIO_NUM_33
 
+// OLED SPI pins (0.96 inch display with pins: GND VCC D0 D1 RES DC CS)
+#define OLED_PIN_CLK GPIO_NUM_18   // D0
+#define OLED_PIN_MOSI GPIO_NUM_23  // D1
+#define OLED_PIN_RST GPIO_NUM_16   // RES
+#define OLED_PIN_DC GPIO_NUM_17    // DC
+#define OLED_PIN_CS GPIO_NUM_27    // CS
+
+#define OLED_SPI_HOST SPI2_HOST
+#define OLED_WIDTH 128
+#define OLED_HEIGHT 64
+#define OLED_PAGES (OLED_HEIGHT / 8)
+#define OLED_BUF_SIZE (OLED_WIDTH * OLED_PAGES)
+
 // Timing constants (in milliseconds)
 #define BUTTON_DEBOUNCE_MS 20
 #define BUTTON_CHECK_INTERVAL_MS 10
@@ -36,6 +53,7 @@ static const char *TAG = "BIO_BUBBLER";
 // WiFi Configuration
 #define WIFI_SSID "BioBubbler"
 #define WIFI_PASS "bubbler123"
+#define WIFI_AP_IP "192.168.4.1"
 #define WIFI_CHANNEL 1
 #define MAX_STA_CONN 4
 
@@ -75,12 +93,466 @@ static int continuous_pumps_enabled = 1;
 // HTTP server handle
 static httpd_handle_t server = NULL;
 
+// OLED handle and framebuffer
+static spi_device_handle_t oled_spi = NULL;
+static uint8_t oled_buffer[OLED_BUF_SIZE];
+static int oled_show_wifi_info = 0;
+
+// Brewing runtime tracker for CONTINUOUS mode (microseconds).
+static uint64_t brewing_elapsed_us = 0;
+static int64_t brewing_last_tick_us = 0;
+static int brewing_running = 0;
+
+static void brewing_reset(void)
+{
+    brewing_elapsed_us = 0;
+    brewing_last_tick_us = 0;
+    brewing_running = 0;
+}
+
+static void brewing_update(void)
+{
+    if (current_state != STATE_CONTINUOUS) {
+        // Leaving Brewing mode fully resets the counter.
+        brewing_reset();
+        return;
+    }
+
+    if (!continuous_pumps_enabled) {
+        // Pause: keep elapsed time, stop accumulating.
+        brewing_running = 0;
+        brewing_last_tick_us = 0;
+        return;
+    }
+
+    int64_t now_us = esp_timer_get_time();
+    if (!brewing_running) {
+        brewing_running = 1;
+        brewing_last_tick_us = now_us;
+        return;
+    }
+
+    if (brewing_last_tick_us > 0 && now_us > brewing_last_tick_us) {
+        brewing_elapsed_us += (uint64_t)(now_us - brewing_last_tick_us);
+    }
+    brewing_last_tick_us = now_us;
+}
+
+static esp_err_t oled_spi_write(const uint8_t *buf, size_t len, int dc_level)
+{
+    if (!oled_spi) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    gpio_set_level(OLED_PIN_DC, dc_level);
+
+    spi_transaction_t t = {
+        .length = len * 8,
+        .tx_buffer = buf,
+    };
+
+    return spi_device_transmit(oled_spi, &t);
+}
+
+static esp_err_t oled_send_cmd(uint8_t cmd)
+{
+    return oled_spi_write(&cmd, 1, 0);
+}
+
+static esp_err_t oled_send_data(const uint8_t *buf, size_t len)
+{
+    return oled_spi_write(buf, len, 1);
+}
+
+static esp_err_t oled_update(void)
+{
+    esp_err_t err;
+
+    for (int page = 0; page < OLED_PAGES; page++) {
+        err = oled_send_cmd(0xB0 | page);  // page address
+        if (err != ESP_OK) return err;
+        err = oled_send_cmd(0x00);         // lower column start
+        if (err != ESP_OK) return err;
+        err = oled_send_cmd(0x10);         // higher column start
+        if (err != ESP_OK) return err;
+
+        err = oled_send_data(&oled_buffer[page * OLED_WIDTH], OLED_WIDTH);
+        if (err != ESP_OK) return err;
+    }
+
+    return ESP_OK;
+}
+
+static void oled_clear_buffer(void)
+{
+    memset(oled_buffer, 0x00, sizeof(oled_buffer));
+}
+
+static void oled_set_pixel(int x, int y, int on)
+{
+    if (x < 0 || x >= OLED_WIDTH || y < 0 || y >= OLED_HEIGHT) {
+        return;
+    }
+
+    size_t idx = (size_t)(y / 8) * OLED_WIDTH + (size_t)x;
+    uint8_t mask = (uint8_t)(1U << (y & 7));
+
+    if (on) {
+        oled_buffer[idx] |= mask;
+    } else {
+        oled_buffer[idx] &= (uint8_t)~mask;
+    }
+}
+
+static const uint8_t *oled_get_glyph(char c)
+{
+    static const uint8_t G_SPACE[7] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+    static const uint8_t G_DOT[7] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x06};
+
+    static const uint8_t G_A[7] = {0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11};
+    static const uint8_t G_B[7] = {0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E};
+    static const uint8_t G_C[7] = {0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E};
+    static const uint8_t G_D[7] = {0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E};
+    static const uint8_t G_E[7] = {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F};
+    static const uint8_t G_G[7] = {0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0F};
+    static const uint8_t G_H[7] = {0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11};
+    static const uint8_t G_I[7] = {0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x1F};
+    static const uint8_t G_L[7] = {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F};
+    static const uint8_t G_M[7] = {0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11};
+    static const uint8_t G_N[7] = {0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11};
+    static const uint8_t G_O[7] = {0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E};
+    static const uint8_t G_P[7] = {0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10};
+    static const uint8_t G_R[7] = {0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11};
+    static const uint8_t G_S[7] = {0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E};
+    static const uint8_t G_T[7] = {0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04};
+    static const uint8_t G_U[7] = {0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E};
+    static const uint8_t G_W[7] = {0x11, 0x11, 0x11, 0x15, 0x15, 0x15, 0x0A};
+
+    static const uint8_t G_0[7] = {0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E};
+    static const uint8_t G_1[7] = {0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E};
+    static const uint8_t G_2[7] = {0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F};
+    static const uint8_t G_3[7] = {0x1E, 0x01, 0x01, 0x0E, 0x01, 0x01, 0x1E};
+    static const uint8_t G_4[7] = {0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02};
+    static const uint8_t G_5[7] = {0x1F, 0x10, 0x10, 0x1E, 0x01, 0x01, 0x1E};
+    static const uint8_t G_6[7] = {0x0E, 0x10, 0x10, 0x1E, 0x11, 0x11, 0x0E};
+    static const uint8_t G_7[7] = {0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08};
+    static const uint8_t G_8[7] = {0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E};
+    static const uint8_t G_9[7] = {0x0E, 0x11, 0x11, 0x0F, 0x01, 0x01, 0x0E};
+
+    char up = (char)toupper((unsigned char)c);
+
+    switch (up) {
+        case 'A': return G_A;
+        case 'B': return G_B;
+        case 'C': return G_C;
+        case 'D': return G_D;
+        case 'E': return G_E;
+        case 'G': return G_G;
+        case 'H': return G_H;
+        case 'I': return G_I;
+        case 'L': return G_L;
+        case 'M': return G_M;
+        case 'N': return G_N;
+        case 'O': return G_O;
+        case 'P': return G_P;
+        case 'R': return G_R;
+        case 'S': return G_S;
+        case 'T': return G_T;
+        case 'U': return G_U;
+        case 'W': return G_W;
+        case '0': return G_0;
+        case '1': return G_1;
+        case '2': return G_2;
+        case '3': return G_3;
+        case '4': return G_4;
+        case '5': return G_5;
+        case '6': return G_6;
+        case '7': return G_7;
+        case '8': return G_8;
+        case '9': return G_9;
+        case '.': return G_DOT;
+        case ' ': return G_SPACE;
+        default:  return G_SPACE;
+    }
+}
+
+static void oled_draw_char_scaled(int x, int y, char c, int scale)
+{
+    const uint8_t *glyph = oled_get_glyph(c);
+
+    for (int row = 0; row < 7; row++) {
+        uint8_t bits = glyph[row];
+        for (int col = 0; col < 5; col++) {
+            if (bits & (1U << (4 - col))) {
+                for (int dy = 0; dy < scale; dy++) {
+                    for (int dx = 0; dx < scale; dx++) {
+                        oled_set_pixel(x + (col * scale) + dx, y + (row * scale) + dy, 1);
+                    }
+                }
+            }
+        }
+    }
+}
+
+static void oled_draw_text_scaled(int x, int y, const char *text, int scale)
+{
+    while (*text) {
+        oled_draw_char_scaled(x, y, *text, scale);
+        x += 6 * scale;
+        text++;
+    }
+}
+
+static int oled_text_width(const char *text, int scale)
+{
+    int len = 0;
+    while (text[len] != '\0') {
+        len++;
+    }
+
+    if (len <= 0) {
+        return 0;
+    }
+
+    return (len * 5 * scale) + ((len - 1) * scale);
+}
+
+static void oled_draw_centered_text(int y, const char *text, int scale)
+{
+    int w = oled_text_width(text, scale);
+    int x = (OLED_WIDTH - w) / 2;
+    if (x < 0) x = 0;
+    oled_draw_text_scaled(x, y, text, scale);
+}
+
+static const char *oled_state_label(machine_state_t state)
+{
+    switch (state) {
+        case STATE_CONTINUOUS: return "Brewing";
+        case STATE_PULSE: return ((pump1_timer > 0 || pump2_timer > 0) ? "Pouring" : "Tap");
+        case STATE_IDLE:
+        default:
+            return "Idle";
+    }
+}
+
+static const char *oled_pending_label(pending_state_t state)
+{
+    switch (state) {
+        case PENDING_PULSE: return "Tap";
+        case PENDING_CONTINUOUS: return "Brew";
+        case PENDING_NONE:
+        default:
+            return "";
+    }
+}
+
+static void oled_draw_status(int force)
+{
+    static machine_state_t last_state = (machine_state_t)-1;
+    static pending_state_t last_pending = (pending_state_t)-1;
+    static int last_flash_on = -1;
+    static int last_show_wifi_info = -1;
+    static uint32_t last_brew_minutes = 0xFFFFFFFFU;
+    static int last_brewing_enabled = -1;
+    static int last_pouring = -1;
+
+    if (!oled_spi) {
+        return;
+    }
+
+    uint32_t brew_minutes = (uint32_t)(brewing_elapsed_us / (60ULL * 1000000ULL));
+    int pouring = (pump1_timer > 0 || pump2_timer > 0);
+    int flash_on_phase = (flash_timer >= (LED_FLASH_INTERVAL_MS / 2));
+    int show_wifi_page = (current_state == STATE_IDLE && pending_state == PENDING_NONE && oled_show_wifi_info);
+
+    if (!force) {
+        if (current_state == STATE_CONTINUOUS) {
+            if (current_state == last_state &&
+                brew_minutes == last_brew_minutes &&
+                continuous_pumps_enabled == last_brewing_enabled) {
+                return;
+            }
+        } else if (current_state == STATE_PULSE) {
+            if (current_state == last_state && pouring == last_pouring) {
+                return;
+            }
+        } else {
+            // In IDLE, refresh when pending mode or flash phase changes.
+            if (current_state == last_state &&
+                pending_state == last_pending &&
+                flash_on_phase == last_flash_on &&
+                show_wifi_page == last_show_wifi_info) {
+                return;
+            }
+        }
+    }
+
+    last_state = current_state;
+    last_pending = pending_state;
+    last_flash_on = flash_on_phase;
+    last_show_wifi_info = show_wifi_page;
+    last_brew_minutes = brew_minutes;
+    last_brewing_enabled = continuous_pumps_enabled;
+    last_pouring = pouring;
+
+    oled_clear_buffer();
+
+    if (show_wifi_page) {
+        oled_draw_centered_text(0, "SSID", 1);
+        oled_draw_centered_text(9, WIFI_SSID, 1);
+        oled_draw_centered_text(22, "PASS", 1);
+        oled_draw_centered_text(31, WIFI_PASS, 1);
+        oled_draw_centered_text(44, "IP", 1);
+        oled_draw_centered_text(53, WIFI_AP_IP, 1);
+
+        if (oled_update() != ESP_OK) {
+            ESP_LOGW(TAG, "OLED status update failed");
+        }
+        return;
+    }
+
+    const int scale = 2;
+    const char *label = oled_state_label(current_state);
+
+    // In IDLE, show pending selections as flashing OLED text synchronized with LED flash.
+    if (current_state == STATE_IDLE && pending_state != PENDING_NONE) {
+        if (flash_on_phase) {
+            label = oled_pending_label(pending_state);
+        } else {
+            label = "";
+        }
+    }
+
+    int text_w = oled_text_width(label, scale);
+    int text_h = 7 * scale;
+    int x = (OLED_WIDTH - text_w) / 2;
+    int y = (current_state == STATE_CONTINUOUS) ? 8 : (OLED_HEIGHT - text_h) / 2;
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+
+    if (label[0] != '\0') {
+        oled_draw_text_scaled(x, y, label, scale);
+    }
+
+    if (current_state == STATE_CONTINUOUS) {
+        uint32_t total_minutes = brew_minutes;
+        uint32_t days = total_minutes / (24U * 60U);
+        total_minutes %= (24U * 60U);
+        uint32_t hours = total_minutes / 60U;
+        uint32_t mins = total_minutes % 60U;
+
+        char timer_text[24];
+        if (days > 0) {
+            snprintf(timer_text, sizeof(timer_text), "%02lud%02luh%02lum",
+                     (unsigned long)days,
+                     (unsigned long)hours,
+                     (unsigned long)mins);
+        } else {
+            snprintf(timer_text, sizeof(timer_text), "%02luh%02lum",
+                     (unsigned long)hours,
+                     (unsigned long)mins);
+        }
+
+        const int timer_scale = 2;
+        int timer_w = oled_text_width(timer_text, timer_scale);
+        int timer_x = (OLED_WIDTH - timer_w) / 2;
+        if (timer_x < 0) timer_x = 0;
+        oled_draw_text_scaled(timer_x, 38, timer_text, timer_scale);
+    }
+
+    if (oled_update() != ESP_OK) {
+        ESP_LOGW(TAG, "OLED status update failed");
+    }
+}
+
+static esp_err_t oled_init(void)
+{
+    esp_err_t err;
+
+    gpio_reset_pin(OLED_PIN_DC);
+    gpio_set_direction(OLED_PIN_DC, GPIO_MODE_OUTPUT);
+
+    gpio_reset_pin(OLED_PIN_RST);
+    gpio_set_direction(OLED_PIN_RST, GPIO_MODE_OUTPUT);
+
+    spi_bus_config_t buscfg = {
+        .mosi_io_num = OLED_PIN_MOSI,
+        .miso_io_num = -1,
+        .sclk_io_num = OLED_PIN_CLK,
+        .quadwp_io_num = -1,
+        .quadhd_io_num = -1,
+        .max_transfer_sz = OLED_BUF_SIZE,
+    };
+
+    err = spi_bus_initialize(OLED_SPI_HOST, &buscfg, SPI_DMA_CH_AUTO);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "OLED spi_bus_initialize failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    spi_device_interface_config_t devcfg = {
+        .clock_speed_hz = 8 * 1000 * 1000,
+        .mode = 0,
+        .spics_io_num = OLED_PIN_CS,
+        .queue_size = 1,
+        .flags = SPI_DEVICE_HALFDUPLEX,
+    };
+
+    err = spi_bus_add_device(OLED_SPI_HOST, &devcfg, &oled_spi);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "OLED spi_bus_add_device failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    // Hardware reset pulse.
+    gpio_set_level(OLED_PIN_RST, 0);
+    vTaskDelay(pdMS_TO_TICKS(20));
+    gpio_set_level(OLED_PIN_RST, 1);
+    vTaskDelay(pdMS_TO_TICKS(20));
+
+    // SSD1306-compatible init sequence (works on most 0.96in SPI OLED modules).
+    const uint8_t init_cmds[] = {
+        0xAE,       // display off
+        0xD5, 0x80, // clock divide
+        0xA8, 0x3F, // multiplex ratio 1/64
+        0xD3, 0x00, // display offset
+        0x40,       // start line
+        0x8D, 0x14, // charge pump on
+        0x20, 0x02, // page addressing mode
+        0xA1,       // segment remap
+        0xC8,       // COM scan direction remap
+        0xDA, 0x12, // COM pins config
+        0x81, 0x7F, // contrast
+        0xD9, 0xF1, // pre-charge
+        0xDB, 0x40, // VCOMH deselect level
+        0xA4,       // display resume RAM
+        0xA6,       // normal (not inverted)
+        0x2E,       // deactivate scroll
+        0xAF,       // display on
+    };
+
+    for (size_t i = 0; i < sizeof(init_cmds); i++) {
+        err = oled_send_cmd(init_cmds[i]);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "OLED init command failed: %s", esp_err_to_name(err));
+            return err;
+        }
+    }
+
+    return ESP_OK;
+}
+
 void set_machine_state(machine_state_t state)
 {
     // Turn off all status LEDs
     gpio_set_level(LED_RED, 0);
     gpio_set_level(LED_GREEN, 0);
     gpio_set_level(LED_BLUE, 0);
+
+    if (state != STATE_IDLE) {
+        oled_show_wifi_info = 0;
+    }
 
     // Clear pending state when actually transitioning
     pending_state = PENDING_NONE;
@@ -162,6 +634,9 @@ static int is_button_pressed(gpio_num_t pin)
 
 void handle_mode_button(void)
 {
+    // Mode/select should always return OLED to state/pending display mode.
+    oled_show_wifi_info = 0;
+
     // From CONTINUOUS, mode acts as quick exit to IDLE.
     if (current_state == STATE_CONTINUOUS) {
         ESP_LOGI(TAG, "Mode: CONTINUOUS -> IDLE");
@@ -230,8 +705,11 @@ void handle_confirm_button(void)
             gpio_set_level(PUMP1_PIN, 0);
             gpio_set_level(PUMP2_PIN, 0);
         }
+    } else if (current_state == STATE_IDLE && pending_state == PENDING_NONE) {
+        // In IDLE, confirm toggles Wi-Fi info page on OLED.
+        oled_show_wifi_info = !oled_show_wifi_info;
+        ESP_LOGI(TAG, "IDLE: OLED %s", oled_show_wifi_info ? "WiFi info" : "Idle");
     }
-    // In IDLE state, confirm button does nothing
 }
 
 void update_led_flash(void)
@@ -266,21 +744,23 @@ void update_pulse_timer(void)
     if (current_state == STATE_PULSE) {
         // Pump 1 timer
         if (pump1_timer > 0) {
-            pump1_timer -= BUTTON_CHECK_INTERVAL_MS;
-            if (pump1_timer <= 0) {
+            if (pump1_timer <= BUTTON_CHECK_INTERVAL_MS) {
                 pump1_timer = 0;
                 gpio_set_level(PUMP1_PIN, 0);
                 ESP_LOGI(TAG, "Pump 1 stopped");
+            } else {
+                pump1_timer -= BUTTON_CHECK_INTERVAL_MS;
             }
         }
         
         // Pump 2 timer
         if (pump2_timer > 0) {
-            pump2_timer -= BUTTON_CHECK_INTERVAL_MS;
-            if (pump2_timer <= 0) {
+            if (pump2_timer <= BUTTON_CHECK_INTERVAL_MS) {
                 pump2_timer = 0;
                 gpio_set_level(PUMP2_PIN, 0);
                 ESP_LOGI(TAG, "Pump 2 stopped");
+            } else {
+                pump2_timer -= BUTTON_CHECK_INTERVAL_MS;
             }
         }
     }
@@ -539,6 +1019,13 @@ void app_main(void)
     // Initialize GPIO
     init_gpio();
 
+    // Initialize OLED and draw a simple test pattern.
+    if (oled_init() == ESP_OK) {
+        ESP_LOGI(TAG, "OLED initialized");
+    } else {
+        ESP_LOGW(TAG, "OLED init failed (continuing without display)");
+    }
+
     // Initialize WiFi and Web Server
     wifi_init_softap();
     start_webserver();
@@ -553,6 +1040,7 @@ void app_main(void)
     // Start in idle state (green LED on, pumps off)
     set_machine_state(STATE_IDLE);
     ESP_LOGI(TAG, "Initialized - STATE_IDLE");
+    oled_draw_status(1);
 
     // Main control loop
     while (1) {
@@ -585,6 +1073,12 @@ void app_main(void)
 
         // Update pulse timer
         update_pulse_timer();
+
+        // Track brewing runtime when in CONTINUOUS mode.
+        brewing_update();
+
+        // Refresh OLED state display when state/pending changes
+        oled_draw_status(0);
 
         // Small delay to avoid hogging CPU
         vTaskDelay(BUTTON_CHECK_INTERVAL_MS / portTICK_PERIOD_MS);
