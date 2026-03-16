@@ -7,18 +7,18 @@ This file contains Mermaid diagrams aligned with the current firmware.
 ```mermaid
 graph TD
     PSU["5V Relay Supply"]
-    ESP["ESP32 WROOM"]
+    ESP["ESP32-C3 Super Mini"]
     OLED["0.96in SPI OLED"]
 
     subgraph Outputs
-        LED["RGB LED\nGPIO 2/4/5"]
-        REL1["Pump 1 Relay\nGPIO 12"]
-        REL2["Pump 2 Relay\nGPIO 13"]
+        LED["RGB LED\nGPIO 0/1/2"]
+        REL1["Pump 1 Relay\nGPIO 20"]
+        REL2["Pump 2 Relay\nGPIO 21"]
     end
 
     subgraph Inputs
-        BTN_MODE["Mode Button\nGPIO 32 active-low"]
-        BTN_CONFIRM["Confirm/Select Button\nGPIO 33 active-low"]
+        BTN_MODE["Mode Button\nGPIO 3 active-low"]
+        BTN_CONFIRM["Confirm/Select Button\nGPIO 10 active-low"]
     end
 
     PSU --> REL1
@@ -31,11 +31,11 @@ graph TD
     ESP --> BTN_MODE
     ESP --> BTN_CONFIRM
 
-    ESP -->|SCLK GPIO18| OLED
-    ESP -->|MOSI GPIO23| OLED
-    ESP -->|RES GPIO16| OLED
-    ESP -->|DC GPIO17| OLED
-    ESP -->|CS GPIO27| OLED
+    ESP -->|SCLK GPIO5| OLED
+    ESP -->|MOSI GPIO4| OLED
+    ESP -->|RES GPIO8| OLED
+    ESP -->|DC GPIO7| OLED
+    ESP -->|CS GPIO6| OLED
     ESP -->|3V3/GND| OLED
 ```
 
@@ -43,14 +43,14 @@ graph TD
 
 ```mermaid
 graph LR
-    ESP["ESP32"]
+    ESP["ESP32-C3"]
     OLED["OLED"]
 
-    ESP -->|GPIO18| D0["D0/SCLK"]
-    ESP -->|GPIO23| D1["D1/MOSI"]
-    ESP -->|GPIO16| RES["RES"]
-    ESP -->|GPIO17| DC["DC"]
-    ESP -->|GPIO27| CS["CS"]
+    ESP -->|GPIO5| D0["D0/SCLK"]
+    ESP -->|GPIO4| D1["D1/MOSI"]
+    ESP -->|GPIO8| RES["RES"]
+    ESP -->|GPIO7| DC["DC"]
+    ESP -->|GPIO6| CS["CS"]
     ESP -->|3V3| VCC["VCC"]
     ESP -->|GND| GND["GND"]
 

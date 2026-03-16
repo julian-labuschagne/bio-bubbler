@@ -1,6 +1,6 @@
 # Bio-Bubbler
 
-Bio-Bubbler is an ESP32-based pump controller with:
+Bio-Bubbler is an ESP32-C3 Super Mini-based pump controller with:
 - RGB status LED
 - two relay-driven pumps
 - two buttons (Mode and Confirm/Select)
@@ -20,18 +20,18 @@ Bio-Bubbler is an ESP32-based pump controller with:
 
 | Function | GPIO |
 |---|---|
-| LED Red | 2 |
-| LED Green | 4 |
-| LED Blue | 5 |
-| Pump 1 relay | 12 |
-| Pump 2 relay | 13 |
-| OLED SCLK (`D0`) | 18 |
-| OLED MOSI (`D1`) | 23 |
-| OLED RST (`RES`) | 16 |
-| OLED DC | 17 |
-| OLED CS | 27 |
-| Mode button | 32 |
-| Confirm/Select button | 33 |
+| LED Red | 0 |
+| LED Green | 1 |
+| LED Blue | 2 |
+| Pump 1 relay | 20 |
+| Pump 2 relay | 21 |
+| OLED SCLK (`D0`) | 5 |
+| OLED MOSI (`D1`) | 4 |
+| OLED RST (`RES`) | 8 |
+| OLED DC | 7 |
+| OLED CS | 6 |
+| Mode button | 3 |
+| Confirm/Select button | 10 |
 
 Buttons are active-low (button to GND, internal pull-up enabled).
 
@@ -54,7 +54,7 @@ Buttons are active-low (button to GND, internal pull-up enabled).
 
 ## Button Behavior
 
-### Mode button (GPIO 32)
+### Mode button (GPIO 3)
 
 - From `IDLE`: cycles pending selection
   - none -> `PENDING_PULSE`
@@ -63,7 +63,7 @@ Buttons are active-low (button to GND, internal pull-up enabled).
 - From `PULSE`: switches to `PENDING_CONTINUOUS`
 - From `CONTINUOUS`: immediate `IDLE`
 
-### Confirm/Select button (GPIO 33)
+### Confirm/Select button (GPIO 10)
 
 - If `PENDING_PULSE`: enters `PULSE`
 - If `PENDING_CONTINUOUS`: enters `CONTINUOUS`
