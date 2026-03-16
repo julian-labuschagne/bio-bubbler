@@ -18,25 +18,25 @@
 
 static const char *TAG = "BIO_BUBBLER";
 
-// Status LED pins (RGB)
-#define LED_RED GPIO_NUM_2
-#define LED_GREEN GPIO_NUM_4
-#define LED_BLUE GPIO_NUM_5
+// ESP32-C3 Super Mini pin map: Status LED pins (RGB)
+#define LED_RED GPIO_NUM_0      // LED Red (R1)
+#define LED_GREEN GPIO_NUM_1    // LED Green (R2)
+#define LED_BLUE GPIO_NUM_2     // LED Blue (R3)
 
 // Pump control pins (via relays)
-#define PUMP1_PIN GPIO_NUM_12
-#define PUMP2_PIN GPIO_NUM_13
+#define PUMP1_PIN GPIO_NUM_20   // Relay IN1
+#define PUMP2_PIN GPIO_NUM_21   // Relay IN2
 
 // Button pins
-#define BUTTON_MODE_PIN GPIO_NUM_32
-#define BUTTON_CONFIRM_PIN GPIO_NUM_33
+#define BUTTON_MODE_PIN GPIO_NUM_3      // BTN_RED (SW1)
+#define BUTTON_CONFIRM_PIN GPIO_NUM_10  // BTN_GREEN (SW2)
 
 // OLED SPI pins (0.96 inch display with pins: GND VCC D0 D1 RES DC CS)
-#define OLED_PIN_CLK GPIO_NUM_18   // D0
-#define OLED_PIN_MOSI GPIO_NUM_23  // D1
-#define OLED_PIN_RST GPIO_NUM_16   // RES
-#define OLED_PIN_DC GPIO_NUM_17    // DC
-#define OLED_PIN_CS GPIO_NUM_27    // CS
+#define OLED_PIN_CLK GPIO_NUM_5    // D0/CLK
+#define OLED_PIN_MOSI GPIO_NUM_4   // D1/MOSI
+#define OLED_PIN_RST GPIO_NUM_8    // RES
+#define OLED_PIN_DC GPIO_NUM_7     // DC
+#define OLED_PIN_CS GPIO_NUM_6     // CS
 
 #define OLED_SPI_HOST SPI2_HOST
 #define OLED_WIDTH 128
