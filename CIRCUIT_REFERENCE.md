@@ -2,28 +2,28 @@
 
 Quick wiring reference for the current firmware.
 
-## ESP32 Connection Summary
+## ESP32-C3 Super Mini Connection Summary
 
 ```
 LED:
-  GPIO 2  -> Red
-  GPIO 4  -> Green
-  GPIO 5  -> Blue
+  GPIO 0  -> Red   (R1)
+  GPIO 1  -> Green  (R2)
+  GPIO 2  -> Blue   (R3)
 
 Pumps (relay control):
-  GPIO 12 -> Pump 1 relay input
-  GPIO 13 -> Pump 2 relay input
+  GPIO 20 -> Pump 1 relay input (IN1)
+  GPIO 21 -> Pump 2 relay input (IN2)
 
 Buttons (active-low to GND):
-  GPIO 32 -> Mode
-  GPIO 33 -> Confirm/Select
+  GPIO 3  -> Mode    (SW1 / BTN_RED)
+  GPIO 10 -> Confirm/Select (SW2 / BTN_GREEN)
 
 OLED (SPI, 0.96 inch):
-  GPIO 18 -> D0 / SCLK
-  GPIO 23 -> D1 / MOSI
-  GPIO 16 -> RES
-  GPIO 17 -> DC
-  GPIO 27 -> CS
+  GPIO 5  -> D0 / SCLK
+  GPIO 4  -> D1 / MOSI
+  GPIO 8  -> RES
+  GPIO 7  -> DC
+  GPIO 6  -> CS
   3V3     -> VCC
   GND     -> GND
 ```
